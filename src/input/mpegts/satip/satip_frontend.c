@@ -1598,7 +1598,8 @@ satip_frontend_input_thread ( void *aux )
   size_t c;
   tvhpoll_event_t ev[3];
   tvhpoll_t *efd;
-  int changing, ms, fatal, running, play2, exit_flag, dummy_play;
+  int changing, ms, fatal, running, play2, exit_flag;
+  int dummy_play, post_setup;
   int rtsp_flags, position, reply;
   uint32_t seq, unc;
   udp_multirecv_t um;
@@ -1724,6 +1725,7 @@ new_tune:
   lfe->sf_seq = -1;
   play2       = 1;
   dummy_play  = 0;
+  post_setup  = 0;
   rtsp_flags  = satip_frontend_rtsp_flags(lfe);
 
   if ((rtsp_flags & SATIP_SETUP_TCP) == 0) {
@@ -2015,49 +2017,17 @@ new_tune:
             tvhdebug(LS_SATIP, "%s #%i - new session %s stream id %li",
                         rtsp->hc_host, lfe->sf_number,
                         rtsp->hc_rtsp_session, rtsp->hc_rtsp_stream_id);
-            if (lfe->sf_device->sd_dummy_play && dummy_play == 0) {
-              /* bare PLAY first (answer is awaited but ignored) */
-              dummy_play = 1;
-              if (satip_rtsp_play_bare(rtsp) >= 0) {
-                reply = 1;
-                continue;
-              }
-              dummy_play = 2; /* send failed: carry on as usual */
-            }
-post_setup:
-            if (lfe->sf_play2) {
-              r = -12345678;
-              tvh_mutex_lock(&lfe->sf_dvr_lock);
-              if (lfe->sf_req == lfe->sf_req_thread) {
-                lfe->sf_req->sf_weight_tuned = lfe->sf_req->sf_weight;
-                r = satip_rtsp_setup(rtsp, position, lfe->sf_number,
-                                     rtp_port, &lm->lm_tuning,
-                                     rtsp_flags | SATIP_SETUP_PLAY,
-                                     lfe->sf_req->sf_weight);
-              }
-              tvh_mutex_unlock(&lfe->sf_dvr_lock);
-              if (r < 0) {
-                tvherror(LS_SATIP, "%s - failed to tune2 (%i)", buf, r);
-                satip_frontend_tuning_error(lfe, tr);
-                fatal = 1;
-              }
-              reply = 1;
-              continue;
-            } else {
-              if (satip_frontend_pid_changed(rtsp, lfe, buf) > 0) {
-                reply = 1;
-                continue;
-              }
-            }
+            post_setup = 1; /* continued after the switch */
           }
           break;
         case RTSP_CMD_PLAY:
           if (!running)
             break;
           if (dummy_play == 1) {
-            /* answer to the bare PLAY: code and content ignored */
+            /* answer to the bare PLAY: code and content are ignored */
             dummy_play = 2;
-            goto post_setup;
+            post_setup = 1;
+            break;
           }
           satip_frontend_wake_other_waiting(lfe, tr);
           if (rtsp->hc_code == 200 && play2) {
@@ -2079,6 +2049,36 @@ post_setup:
           break;
         }
         rtsp->hc_cmd = HTTP_CMD_NONE;
+
+        if (post_setup) {
+          /* SETUP done (and bare PLAY answered, if requested): go on */
+          post_setup = 0;
+          if (lfe->sf_device->sd_dummy_play && dummy_play == 0 &&
+              satip_rtsp_play_bare(rtsp) >= 0) {
+            /* bare PLAY sent: wait for its answer */
+            dummy_play = 1;
+            reply = 1;
+          } else if (lfe->sf_play2) {
+            r = -12345678;
+            tvh_mutex_lock(&lfe->sf_dvr_lock);
+            if (lfe->sf_req == lfe->sf_req_thread) {
+              lfe->sf_req->sf_weight_tuned = lfe->sf_req->sf_weight;
+              r = satip_rtsp_setup(rtsp, position, lfe->sf_number,
+                                   rtp_port, &lm->lm_tuning,
+                                   rtsp_flags | SATIP_SETUP_PLAY,
+                                   lfe->sf_req->sf_weight);
+            }
+            tvh_mutex_unlock(&lfe->sf_dvr_lock);
+            if (r < 0) {
+              tvherror(LS_SATIP, "%s - failed to tune2 (%i)", buf, r);
+              satip_frontend_tuning_error(lfe, tr);
+              fatal = 1;
+            }
+            reply = 1;
+          } else if (satip_frontend_pid_changed(rtsp, lfe, buf) > 0) {
+            reply = 1;
+          }
+        }
       }
 
       if (!running)
@@ -2283,6 +2283,9 @@ satip_frontend_hacks( satip_frontend_t *lfe )
   } else if (strstr(sd->sd_info.modelname, "EyeTV Netstream 4C")) {
     lfe->sf_specinv = 1;
     lfe->sf_pass_weight = 0;
+  } else if (sd->sd_dummy_play) {
+    /* Telestar Digibit Twin: full tuning parameters in the first PLAY */
+    lfe->sf_play2 = 1;
   }
 }
 
