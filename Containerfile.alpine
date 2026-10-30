@@ -37,6 +37,8 @@ RUN apk add --no-cache \
         'uriparser-dev' \
         'wget' \
         'zlib-dev' \
+        'nodejs' \
+        'npm' \
     && \
     git config --global --add safe.directory '/src/data/dvb-scan' && \
     ./configure \
@@ -59,8 +61,8 @@ RUN apk add --no-cache \
                 --enable-kqueue \
                 --disable-libav \
                 --enable-pngquant \
-                --enable-vue_cache \
-                --disable-vue_build \
+                --disable-vue_cache \
+                --enable-vue_build \
                 --python=python3 \
         && \
         make DESTDIR='/tvheadend' -j$(($(nproc) - 1)) install
@@ -93,6 +95,8 @@ RUN apk add --no-cache \
         'tini' \
         'xmltv' \
         'zlib' \
+        'nodejs' \
+        'npm' \
     && \
     addgroup -S 'tvheadend' && \
     adduser -D -G 'tvheadend' -h '/var/lib/tvheadend' -s '/bin/nologin' -S 'tvheadend' && \
